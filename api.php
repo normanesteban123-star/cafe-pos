@@ -19,16 +19,22 @@ $action = $_GET['action'] ?? '';
 $method = $_SERVER['REQUEST_METHOD'];
 $input = json_decode(file_get_contents('php://input'), true) ?? [];
 
+function isPg() {
+    return defined('DB_DRIVER') && DB_DRIVER === 'pgsql';
+}
+
 function ensureUserSchema($db) {
-    $db->query("CREATE TABLE IF NOT EXISTS users (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        full_name VARCHAR(120) NOT NULL,
-        username VARCHAR(80) NOT NULL UNIQUE,
-        password_hash VARCHAR(255) NOT NULL,
-        role ENUM('admin','staff') NOT NULL DEFAULT 'staff',
-        is_active TINYINT(1) NOT NULL DEFAULT 1,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )");
+    if (!isPg()) {
+        $db->query("CREATE TABLE IF NOT EXISTS users (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            full_name VARCHAR(120) NOT NULL,
+            username VARCHAR(80) NOT NULL UNIQUE,
+            password_hash VARCHAR(255) NOT NULL,
+            role ENUM('admin','staff') NOT NULL DEFAULT 'staff',
+            is_active TINYINT(1) NOT NULL DEFAULT 1,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )");
+    }
     $countRes = $db->query("SELECT COUNT(*) AS total FROM users");
     $count = $countRes ? (int)$countRes->fetch_assoc()['total'] : 0;
     if ($count === 0) {
@@ -65,40 +71,42 @@ function requireRole($roles) {
 }
 
 function ensureIngredientSchema($db) {
-    $db->query("CREATE TABLE IF NOT EXISTS ingredients (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        name VARCHAR(120) NOT NULL UNIQUE,
-        unit VARCHAR(30) NOT NULL DEFAULT 'g',
-        stock DECIMAL(12,2) NOT NULL DEFAULT 0,
-        low_stock_threshold DECIMAL(12,2) NOT NULL DEFAULT 0,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-    )");
+    if (!isPg()) {
+        $db->query("CREATE TABLE IF NOT EXISTS ingredients (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            name VARCHAR(120) NOT NULL UNIQUE,
+            unit VARCHAR(30) NOT NULL DEFAULT 'g',
+            stock DECIMAL(12,2) NOT NULL DEFAULT 0,
+            low_stock_threshold DECIMAL(12,2) NOT NULL DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        )");
 
-    try {
-        $db->query("CREATE TABLE IF NOT EXISTS product_ingredients (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            product_id INT NOT NULL,
-            ingredient_id INT NOT NULL,
-            quantity_required DECIMAL(12,2) NOT NULL DEFAULT 0,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE KEY uniq_product_ingredient (product_id, ingredient_id),
-            KEY idx_pi_product (product_id),
-            KEY idx_pi_ingredient (ingredient_id),
-            FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
-            FOREIGN KEY (ingredient_id) REFERENCES ingredients(id) ON DELETE CASCADE
-        )");
-    } catch (Throwable $e) {
-        $db->query("CREATE TABLE IF NOT EXISTS product_ingredients (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            product_id INT NOT NULL,
-            ingredient_id INT NOT NULL,
-            quantity_required DECIMAL(12,2) NOT NULL DEFAULT 0,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE KEY uniq_product_ingredient (product_id, ingredient_id),
-            KEY idx_pi_product (product_id),
-            KEY idx_pi_ingredient (ingredient_id)
-        )");
+        try {
+            $db->query("CREATE TABLE IF NOT EXISTS product_ingredients (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                product_id INT NOT NULL,
+                ingredient_id INT NOT NULL,
+                quantity_required DECIMAL(12,2) NOT NULL DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE KEY uniq_product_ingredient (product_id, ingredient_id),
+                KEY idx_pi_product (product_id),
+                KEY idx_pi_ingredient (ingredient_id),
+                FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
+                FOREIGN KEY (ingredient_id) REFERENCES ingredients(id) ON DELETE CASCADE
+            )");
+        } catch (Throwable $e) {
+            $db->query("CREATE TABLE IF NOT EXISTS product_ingredients (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                product_id INT NOT NULL,
+                ingredient_id INT NOT NULL,
+                quantity_required DECIMAL(12,2) NOT NULL DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE KEY uniq_product_ingredient (product_id, ingredient_id),
+                KEY idx_pi_product (product_id),
+                KEY idx_pi_ingredient (ingredient_id)
+            )");
+        }
     }
 
     $countResult = $db->query("SELECT COUNT(*) AS total FROM ingredients");
@@ -215,11 +223,19 @@ function ensureIngredientSchema($db) {
     ];
 
     foreach ($recipeSql as $sql) {
+        if (isPg()) {
+            $sql = str_replace(
+                "ON DUPLICATE KEY UPDATE quantity_required = VALUES(quantity_required)",
+                "ON CONFLICT (product_id, ingredient_id) DO UPDATE SET quantity_required = EXCLUDED.quantity_required",
+                $sql
+            );
+        }
         $db->query($sql);
     }
 }
 
 function ensureOrderSchema($db) {
+    if (isPg()) return;
     $schema = $db->real_escape_string(DB_NAME);
     $colRes = $db->query("SELECT 1 FROM information_schema.COLUMNS
                           WHERE TABLE_SCHEMA = '$schema'
@@ -242,6 +258,7 @@ function ensureOrderSchema($db) {
 }
 
 function ensureProductSizeColumn($db) {
+    if (isPg()) return;
     $res = $db->query("SHOW COLUMNS FROM products LIKE 'size'");
     if (!$res || $res->num_rows === 0) {
         $db->query("ALTER TABLE products ADD COLUMN size VARCHAR(20) NOT NULL DEFAULT 'Regular' AFTER unit");
@@ -249,6 +266,7 @@ function ensureProductSizeColumn($db) {
 }
 
 function ensureVariantsSchema($db) {
+    if (isPg()) return;
     try {
         $db->query("CREATE TABLE IF NOT EXISTS product_variants (
             id INT AUTO_INCREMENT PRIMARY KEY,
@@ -292,6 +310,7 @@ function ensureVariantsSchema($db) {
 }
 
 function ensureVariantIngredientSchema($db) {
+    if (isPg()) return;
     try {
         $db->query("CREATE TABLE IF NOT EXISTS product_variant_ingredients (
             id INT AUTO_INCREMENT PRIMARY KEY,
@@ -362,6 +381,7 @@ function fetchVariantRecipeMap($db, $variantId, $forUpdate = false) {
 }
 
 function ensureAuditSchema($db) {
+    if (isPg()) return;
     $db->query("CREATE TABLE IF NOT EXISTS audit_logs (
         id INT AUTO_INCREMENT PRIMARY KEY,
         user_id INT DEFAULT NULL,
@@ -586,20 +606,40 @@ switch ($action) {
         }
 
         if ($coffeeQty > 0) {
-            $db->query("INSERT INTO product_ingredients (product_id, ingredient_id, quantity_required)
-                        SELECT p.id, $ingredientId, $coffeeQty
-                        FROM products p
-                        JOIN categories c ON c.id = p.category_id
-                        WHERE c.name = 'Coffee' AND p.is_active = 1
-                        ON DUPLICATE KEY UPDATE quantity_required = VALUES(quantity_required)");
+            if (isPg()) {
+                $db->query("INSERT INTO product_ingredients (product_id, ingredient_id, quantity_required)
+                            SELECT p.id, $ingredientId, $coffeeQty
+                            FROM products p
+                            JOIN categories c ON c.id = p.category_id
+                            WHERE c.name = 'Coffee' AND p.is_active = 1
+                            ON CONFLICT (product_id, ingredient_id)
+                            DO UPDATE SET quantity_required = EXCLUDED.quantity_required");
+            } else {
+                $db->query("INSERT INTO product_ingredients (product_id, ingredient_id, quantity_required)
+                            SELECT p.id, $ingredientId, $coffeeQty
+                            FROM products p
+                            JOIN categories c ON c.id = p.category_id
+                            WHERE c.name = 'Coffee' AND p.is_active = 1
+                            ON DUPLICATE KEY UPDATE quantity_required = VALUES(quantity_required)");
+            }
         } else {
             // If coffee usage is cleared, remove this ingredient from active coffee recipes.
-            $db->query("DELETE pi FROM product_ingredients pi
-                        JOIN products p ON p.id = pi.product_id
-                        JOIN categories c ON c.id = p.category_id
-                        WHERE pi.ingredient_id = $ingredientId
-                          AND c.name = 'Coffee'
-                          AND p.is_active = 1");
+            if (isPg()) {
+                $db->query("DELETE FROM product_ingredients pi
+                            USING products p, categories c
+                            WHERE pi.product_id = p.id
+                              AND p.category_id = c.id
+                              AND pi.ingredient_id = $ingredientId
+                              AND c.name = 'Coffee'
+                              AND p.is_active = 1");
+            } else {
+                $db->query("DELETE pi FROM product_ingredients pi
+                            JOIN products p ON p.id = pi.product_id
+                            JOIN categories c ON c.id = p.category_id
+                            WHERE pi.ingredient_id = $ingredientId
+                              AND c.name = 'Coffee'
+                              AND p.is_active = 1");
+            }
         }
 
         logAudit($db, $user, ($id > 0 ? "Updated ingredient: $name" : "Created ingredient: $name"));
@@ -936,9 +976,16 @@ switch ($action) {
             $ingredientId = (int)($r['ingredient_id'] ?? 0);
             $qtyRequired = (float)($r['quantity_required'] ?? 0);
             if ($ingredientId <= 0 || $qtyRequired <= 0) continue;
-            $db->query("INSERT INTO product_ingredients (product_id, ingredient_id, quantity_required)
-                        VALUES ($productId, $ingredientId, $qtyRequired)
-                        ON DUPLICATE KEY UPDATE quantity_required=VALUES(quantity_required)");
+            if (isPg()) {
+                $db->query("INSERT INTO product_ingredients (product_id, ingredient_id, quantity_required)
+                            VALUES ($productId, $ingredientId, $qtyRequired)
+                            ON CONFLICT (product_id, ingredient_id)
+                            DO UPDATE SET quantity_required = EXCLUDED.quantity_required");
+            } else {
+                $db->query("INSERT INTO product_ingredients (product_id, ingredient_id, quantity_required)
+                            VALUES ($productId, $ingredientId, $qtyRequired)
+                            ON DUPLICATE KEY UPDATE quantity_required=VALUES(quantity_required)");
+            }
         }
         logAudit($db, $user, ($id > 0 ? "Updated product: $name" : "Created product: $name"));
         jsonResponse(['success' => true, 'message' => $message, 'id' => $productId]);
@@ -959,18 +1006,32 @@ switch ($action) {
         while ($varRes && ($row = $varRes->fetch_assoc())) {
             $variantIds[(int)$row['id']] = true;
         }
-        $db->query("DELETE pvi FROM product_variant_ingredients pvi
-                    JOIN product_variants pv ON pv.id = pvi.variant_id
-                    WHERE pv.product_id = $productId");
+        if (isPg()) {
+            $db->query("DELETE FROM product_variant_ingredients pvi
+                        USING product_variants pv
+                        WHERE pv.id = pvi.variant_id
+                          AND pv.product_id = $productId");
+        } else {
+            $db->query("DELETE pvi FROM product_variant_ingredients pvi
+                        JOIN product_variants pv ON pv.id = pvi.variant_id
+                        WHERE pv.product_id = $productId");
+        }
         foreach ($items as $item) {
             $vid = (int)($item['variant_id'] ?? 0);
             $iid = (int)($item['ingredient_id'] ?? 0);
             $qty = (float)($item['quantity_required'] ?? 0);
             if ($vid <= 0 || $iid <= 0 || $qty <= 0) continue;
             if (!isset($variantIds[$vid])) continue;
-            $db->query("INSERT INTO product_variant_ingredients (variant_id, ingredient_id, quantity_required)
-                        VALUES ($vid, $iid, $qty)
-                        ON DUPLICATE KEY UPDATE quantity_required=VALUES(quantity_required)");
+            if (isPg()) {
+                $db->query("INSERT INTO product_variant_ingredients (variant_id, ingredient_id, quantity_required)
+                            VALUES ($vid, $iid, $qty)
+                            ON CONFLICT (variant_id, ingredient_id)
+                            DO UPDATE SET quantity_required = EXCLUDED.quantity_required");
+            } else {
+                $db->query("INSERT INTO product_variant_ingredients (variant_id, ingredient_id, quantity_required)
+                            VALUES ($vid, $iid, $qty)
+                            ON DUPLICATE KEY UPDATE quantity_required=VALUES(quantity_required)");
+            }
         }
         logAudit($db, $user, "Updated variant ingredients (product_id $productId)");
         jsonResponse(['success' => true, 'message' => 'Variant ingredients saved']);
@@ -1193,7 +1254,7 @@ switch ($action) {
         $db = getDB();
         $id = (int)($_GET['id'] ?? 0);
         // Try with cashier_name, fallback to without if column doesn't exist
-        $orderRes = $db->query("SELECT o.*, a.full_name as cashier_name FROM orders o LEFT JOIN accounts a ON o.cashier_id = a.id WHERE o.id=$id");
+        $orderRes = $db->query("SELECT o.*, u.full_name as cashier_name FROM orders o LEFT JOIN users u ON o.cashier_id = u.id WHERE o.id=$id");
         if (!$orderRes) {
             $order = $db->query("SELECT * FROM orders WHERE id=$id")->fetch_assoc();
             $order['cashier_name'] = null;
@@ -1235,14 +1296,15 @@ switch ($action) {
                 $summary['items_sold'] += $row['items_sold'];
             }
         } elseif ($group === 'product') {
-            $sql = "SELECT p.name as label, p.category,
+            $sql = "SELECT p.name as label, c.name as category,
                     SUM(oi.quantity) as items_sold,
-                    SUM(oi.quantity * oi.price) as revenue
+                    SUM(oi.quantity * oi.unit_price) as revenue
                     FROM order_items oi
                     JOIN orders o ON oi.order_id = o.id
                     JOIN products p ON oi.product_id = p.id
+                    LEFT JOIN categories c ON p.category_id = c.id
                     WHERE o.status = 'completed' AND DATE(o.created_at) BETWEEN '$from' AND '$to'
-                    GROUP BY oi.product_id
+                    GROUP BY oi.product_id, p.name, c.name
                     ORDER BY revenue DESC";
             $result = $db->query($sql);
             while ($row = $result->fetch_assoc()) {
@@ -1252,15 +1314,16 @@ switch ($action) {
                 $summary['orders'] = $db->query("SELECT COUNT(DISTINCT order_id) as cnt FROM order_items WHERE product_id IN (SELECT id FROM products WHERE name = '{$row['label']}')")->fetch_assoc()['cnt'] ?? 0;
             }
         } else { // category
-            $sql = "SELECT COALESCE(p.category, 'Uncategorized') as label,
+            $sql = "SELECT COALESCE(c.name, 'Uncategorized') as label,
                     COUNT(DISTINCT o.id) as orders,
                     SUM(oi.quantity) as items_sold,
-                    SUM(oi.quantity * oi.price) as revenue
+                    SUM(oi.quantity * oi.unit_price) as revenue
                     FROM order_items oi
                     JOIN orders o ON oi.order_id = o.id
                     JOIN products p ON oi.product_id = p.id
+                    LEFT JOIN categories c ON p.category_id = c.id
                     WHERE o.status = 'completed' AND DATE(o.created_at) BETWEEN '$from' AND '$to'
-                    GROUP BY p.category
+                    GROUP BY c.name
                     ORDER BY revenue DESC";
             $result = $db->query($sql);
             while ($row = $result->fetch_assoc()) {
@@ -1399,11 +1462,19 @@ switch ($action) {
         while ($row = $recent->fetch_assoc()) $recent_orders[] = $row;
 
         if ($period === 'day') {
-            $result = $db->query("SELECT HOUR(created_at) AS bucket, COALESCE(SUM(total),0) AS revenue, COUNT(*) AS orders
-                                  FROM orders
-                                  WHERE created_at >= '$start' AND created_at < '$end' AND status='completed'
-                                  GROUP BY HOUR(created_at)
-                                  ORDER BY bucket");
+            if (isPg()) {
+                $result = $db->query("SELECT EXTRACT(HOUR FROM created_at) AS bucket, COALESCE(SUM(total),0) AS revenue, COUNT(*) AS orders
+                                      FROM orders
+                                      WHERE created_at >= '$start' AND created_at < '$end' AND status='completed'
+                                      GROUP BY EXTRACT(HOUR FROM created_at)
+                                      ORDER BY bucket");
+            } else {
+                $result = $db->query("SELECT HOUR(created_at) AS bucket, COALESCE(SUM(total),0) AS revenue, COUNT(*) AS orders
+                                      FROM orders
+                                      WHERE created_at >= '$start' AND created_at < '$end' AND status='completed'
+                                      GROUP BY HOUR(created_at)
+                                      ORDER BY bucket");
+            }
             $map = [];
             while ($row = $result->fetch_assoc()) {
                 $map[(int)$row['bucket']] = $row;
@@ -1431,11 +1502,19 @@ switch ($action) {
                 $cursor->modify('+1 day');
             }
         } else {
-            $result = $db->query("SELECT MONTH(created_at) AS bucket, COALESCE(SUM(total),0) AS revenue, COUNT(*) AS orders
-                                  FROM orders
-                                  WHERE created_at >= '$start' AND created_at < '$end' AND status='completed'
-                                  GROUP BY MONTH(created_at)
-                                  ORDER BY bucket");
+            if (isPg()) {
+                $result = $db->query("SELECT EXTRACT(MONTH FROM created_at) AS bucket, COALESCE(SUM(total),0) AS revenue, COUNT(*) AS orders
+                                      FROM orders
+                                      WHERE created_at >= '$start' AND created_at < '$end' AND status='completed'
+                                      GROUP BY EXTRACT(MONTH FROM created_at)
+                                      ORDER BY bucket");
+            } else {
+                $result = $db->query("SELECT MONTH(created_at) AS bucket, COALESCE(SUM(total),0) AS revenue, COUNT(*) AS orders
+                                      FROM orders
+                                      WHERE created_at >= '$start' AND created_at < '$end' AND status='completed'
+                                      GROUP BY MONTH(created_at)
+                                      ORDER BY bucket");
+            }
             $map = [];
             while ($row = $result->fetch_assoc()) {
                 $map[(int)$row['bucket']] = $row;
